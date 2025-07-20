@@ -1,7 +1,8 @@
-................................Implementare router dataplane................................
+## Router Dataplane Implementation
 
-In cadrul temei am resuit sa realizez intr-un final, toate cele 4 cerinte, dirijarea pachetelor ipv4 folosind tabela dinamica de ARP, realizand partea de ARP request si reply, astfel incat routerul sa retina pe masura ce da de ele, adrese mac in ,,cache-ul lui de asocieri"  adresa mac - ip masina in retea. De asemenea, dupa ce am rezolvat cu aceasta functionalitate, am imbunatatit functia de cautare a celei mai bune rute (best_route), pe care o implementasem la laborator ineficient (O(n)), m-am folosit de implementarea cu arbore de prefixe, dupa cum voi detalia mai jos. De asemenea, am tratat si cazurile in care routerul meu primea pachete ipv4 care aveau campul Time to Live mai mic sau egal cu 0, astfel incat sa trimit un mesaj icmp de tip time excedeed catre sender-ul ce mi-a trimis mie ca router, pachetul respectiv. De asemenea si pentru host unreachable (schimband aici pus si simplu mcode-ul si mtype-ul din header) si pentru echo request am procedat similar.
-
+# Description
+This project showcases a complete implementation of a software-based IPv4 router dataplane, developed in C. The router is capable of dynamically routing packets
+using a static or dynamically populated ARP table, handling various ICMP scenarios, and efficiently computing the best forwarding route using a Longest Prefix Match (LPM) structure.
 
 Detalii despre implementarea fiecarei parti, cat si ce provocari am intampinat pe parcursul
 implementarii. 
