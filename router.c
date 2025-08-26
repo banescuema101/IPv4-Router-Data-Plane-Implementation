@@ -12,198 +12,233 @@
 #define ARP_HDR_LEN sizeof(struct arp_hdr)
 #define ICMP_HDR_LEN sizeof(struct icmp_hdr)
 
-struct route_table_entry *tabela_rutare;
-int tabela_rutare_size;
-struct arp_table_entry *tabela_arp;
-int tabela_arp_size;
-struct queue *coada_pachete;
+struct route_table_entry *routing_table;
+int routing_table_size;
+struct arp_table_entry *arp_table;
+int arp_table_size;
+struct queue *packets_queue;
 
-struct pachet_coada {
-	// next_hop ca sa stiu pe ce adresa ip dest se vrea a fi trimis.
+struct queue_packet
+{
+	// next hop, si I know to which destination IP address this packet should be sent.
 	uint32_t next_hop;
-	// interfata pe care trebuie sa il trimit.
+	// the interface on which the packet should be sent.
 	size_t interface;
-	// precum si adresa mac a interfetei curente.
+	// as well as the MAC address of the current interface.
 	uint8_t mac[6];
-	// datele din pachet cu totul.
+	// all the data from the packet.
 	uint8_t *buf;
-	// lungimea efectiva a pachetului original ipv4.
+	// the actual length of the original IPv4 packet.
 	size_t len;
 };
 
-typedef struct node {
-	struct node* children[2]; 
-	// 2 posibili copii, ca-i arbore binar.
+typedef struct node
+{
+	struct node *children[2];
+	// I can have maximum 2 children, as the tree will be a binary one.
 	uint32_t next_hop;
-	struct route_table_entry* route; 
-	int deep; 
-	// inaltimea pe care se afla un nod in arbore.
-	int info; 
-	// 0 sau 1.
+	struct route_table_entry *route;
+	int depth;
+	// the depth of the node in the tree.
+	int info;
+	// 0 or 1.
 } Node, *Tree;
 
-Tree AlocaNod(int info) {
-	Tree nod = malloc(sizeof(Node));
-	if(!nod) {
+Tree NodeAllocation(int info)
+{
+	Tree node = malloc(sizeof(Node));
+	if (!node)
+	{
 		return NULL;
 	}
-	nod->children[0] = NULL;
-	nod->children[1] = NULL;
-	nod->deep = 0;
-	nod->info = info;
-	nod->route = NULL;
-	return nod;
+	node->children[0] = NULL;
+	node->children[1] = NULL;
+	node->depth = 0;
+	node->info = info;
+	node->route = NULL;
+	return node;
 }
-int* transforma_ip_in_binar(uint32_t ip) {
-	int *array_binar = malloc(sizeof(int) * 32);
-	// creez un vector de biti, fiecare element fiind rezultatul
-	// operatiei and intre ip si 1. ( si shiftez rand pe rand
-	// la dreapta ip-ul, sa analizez bit cu bit spre dreapta)
-	for (int i = 0; i < 32; i++) {
-		array_binar[i] = (ip >> (31 - i)) & 1;
+int *ip_to_binary_array(uint32_t ip)
+{
+	int *binary_array = malloc(sizeof(int) * 32);
+	// Create an array of bits, each element being the result
+	// of the AND operation between ip and 1. (And shift
+	// the ip to the right, analyzing each bit one by one)
+	for (int i = 0; i < 32; i++)
+	{
+		binary_array[i] = (ip >> (31 - i)) & 1;
 	}
-	return array_binar;
+	return binary_array;
 }
-int calcul_lungime_prefix(uint32_t mask) {
+
+int calculate_prefix_length(uint32_t mask)
+{
 	int count = 0;
-	for (int i = 0; i < 32; i++) {
-		// vad rand, pe rand daca bitul curent e sau nu activ.
-		// si fac un shift la dreapta pt a ma uita la bitul curent.
-		if (mask & (1 << (31 - i))) {
+	for (int i = 0; i < 32; i++)
+	{
+		// Check one by one if the current bit is set.
+		// Shift right to look at the current bit.
+		if (mask & (1 << (31 - i)))
+		{
 			count++;
-		} else {
-			break; 
+		}
+		else
+		{
+			break;
 		}
 	}
 	return count;
 }
-void insereaza(Tree arbore, struct route_table_entry* entry) {
-	Tree nod = arbore;
-	int *array_binar = transforma_ip_in_binar(ntohl(entry->prefix));
-	int lungime_prefix = calcul_lungime_prefix(ntohl(entry->mask));
-	// iau bit cu bit din adresa ip si ori aloc nod daca nu am alocat, ori ma deplasez
-	// spre acel nod si tot asa pana dau de frunze.
-	for (int i = 0; i < lungime_prefix; i++) {
-		if (array_binar[i] == 0) {
-			if (nod->children[0] == NULL) {
-				nod->children[0] = AlocaNod(0);
-				nod->children[0]->deep = nod->deep + 1;
+void TreeInsertion(Tree tree, struct route_table_entry *entry)
+{
+	Tree node = tree;
+	int *binary_array = ip_to_binary_array(ntohl(entry->prefix));
+	int prefix_length = calculate_prefix_length(ntohl(entry->mask));
+	// I take each bit from the IP address and either allocate a node if it hasn't been allocated,
+	// or move to that node, and so on until I reach the leaves.
+	for (int i = 0; i < prefix_length; i++)
+	{
+		if (binary_array[i] == 0)
+		{
+			if (node->children[0] == NULL)
+			{
+				node->children[0] = NodeAllocation(0);
+				node->children[0]->depth = node->depth + 1;
 			}
-			nod = nod->children[0]; // daca deja e alocat nodul cu bitul 0,
-			// doar ma duc pe ramura lui.
-		} else {
-			if (nod->children[1] == NULL) {
-				nod->children[1] = AlocaNod(1);
-				nod->children[1]->deep = nod->deep + 1;
+			node = node->children[0]; // if the node with bit 0 is already allocated, just move to its branch.
+		}
+		else
+		{
+			if (node->children[1] == NULL)
+			{
+				node->children[1] = NodeAllocation(1);
+				node->children[1]->depth = node->depth + 1;
 			}
-			nod = nod->children[1];
+			node = node->children[1];
 		}
 	}
-	nod->route = entry;
+	node->route = entry;
 }
-void insert_all(Tree arbore, struct route_table_entry* tabela_rutare, int size) {
-	for (int i = 0; i < size; i++) {
-		insereaza(arbore, &tabela_rutare[i]);
+
+void insert_all(Tree tree, struct route_table_entry *routing_table, int size)
+{
+	for (int i = 0; i < size; i++)
+	{
+		TreeInsertion(tree, &routing_table[i]);
 	}
 }
-// void printeaza_arbore(Tree arbore) {
-// 	if (arbore == NULL) {
+// void printTree(Tree tree) {
+// 	if (tree == NULL) {
 // 		return;
 // 	}
-// 	printf("nod curent cu info: %d si pe adancimea: %d\n", arbore->info, arbore->deep);
-// 	printeaza_arbore(arbore->children[0]);
-// 	printeaza_arbore(arbore->children[1]);
+// 	printf("current node with info: %d on depth: %d\n", tree->info, tree->depth);
+// 	printTree(tree->children[0]);
+// 	printTree(tree->children[1]);
 // }
-struct route_table_entry* cauta_long_prefix_match(Tree arbore, uint32_t ip_dest) {
-	int* array_binar = transforma_ip_in_binar(ntohl(ip_dest));
-	struct route_table_entry* adresa_matchuita = NULL;
-	int max_deep = -1;
 
-	Tree nod = arbore;
-	// iterez prin vectorul de biti ai adresei ip dest, si in functie de ce informatie am
-	// o iau pe ramura din stanga sau din dreapta, pana ajung la o frunza, retinand pt fiecare nod ( posibil capat 
-	// al celui mai lung prefix), intrarea in tabela de rutare aferenta. La final returnez adresa_matchuita.
-    for (int i = 0; i < 32; i++) {
-		// daca nu mai are copii, am ajuns la frunza => ma opresc si returnez ce am gasit pana acum, daca am gasit ceva
-        if (nod->children[array_binar[i]] == NULL) {
-            break;
-        }
-		// deplasare ori pe ramura stanga, ori pe dreapta
-		if (array_binar[i] == 0) {
-			nod = nod->children[0];
-		} else {
-			nod  = nod->children[1];
+struct route_table_entry *find_longest_prefix_match(Tree tree, uint32_t ip_dest)
+{
+	int *binary_array = ip_to_binary_array(ntohl(ip_dest));
+	struct route_table_entry *matched_entry = NULL;
+	int max_depth = -1;
+
+	Tree node = tree;
+	// Iterate through the bits of the destination IP address.
+	// Depending on the bit value, traverse the left or right branch,
+	// keeping track of the routing table entry for each node (possible longest prefix match).
+	// At the end, return the matched_entry.
+	for (int i = 0; i < 32; i++)
+	{
+		// If there are no more children, we've reached a leaf node.
+		// Stop and return what we've found so far, if anything.
+		if (node->children[binary_array[i]] == NULL)
+		{
+			break;
 		}
-		// aici se va intra prima data la primul copil al radacinii, si tot asa etc etc
-        if (nod->route != NULL && nod->deep > max_deep) {
-            adresa_matchuita = nod->route;  // retin ultimul prefix bun pe care l-am obtinut
-			max_deep = nod->deep; //actualizez adancimea maxima
-        }
-    }
-    return adresa_matchuita;
+		// Move to the left or right branch.
+		if (binary_array[i] == 0)
+		{
+			node = node->children[0];
+		}
+		else
+		{
+			node = node->children[1];
+		}
+		// At each node, if there is a routing entry and its depth is greater than the current max,
+		// update the matched_entry and max_depth.
+		if (node->route != NULL && node->depth > max_depth)
+		{
+			matched_entry = node->route;
+			max_depth = node->depth;
+		}
+	}
+	return matched_entry;
 }
 
-// varianta clasica de gasire a celei mai bune rute posibile.
+// Classic variant for finding the best possible route.
 
 // struct route_table_entry *get_best_route(uint32_t ip_dest) {
 // 	// from lab 4.
 // 	struct route_table_entry *best_route = NULL;
 // 	uint32_t max_mask = 0;
-// 	for (int i = 0; i < tabela_rutare_size; i++) {
-// 		if (ntohl(tabela_rutare[i].prefix) == ntohl(ip_dest & tabela_rutare[i].mask)) {
-// 		// daca am gasit o ruta care are prefixul egal cu ip_dest SI LOGIC cu masca, atunci returnez acea ruta.
-// 	    // verific si ca ar fi cu cel mai lung prefix.
-// 			if(ntohl(tabela_rutare[i].mask) > ntohl(max_mask)) {
-// 				max_mask = tabela_rutare[i].mask;
-// 				best_route = &tabela_rutare[i];
+// 	for (int i = 0; i < routing_table_size; i++) {
+// 		if (ntohl(routing_table[i].prefix) == ntohl(ip_dest & routing_table[i].mask)) {
+// 			// If a route is found whose prefix matches ip_dest ANDed with the mask, return that route.
+// 			// Also check if it has the longest prefix.
+// 			if(ntohl(routing_table[i].mask) > ntohl(max_mask)) {
+// 				max_mask = routing_table[i].mask;
+// 				best_route = &routing_table[i];
 // 			}
 // 		}
 // 	}
-// 	printf("best route-ul: %u\n", ntohl(best_route->next_hop));
-// 	printf("masca: %u\n", ntohl(best_route->mask));
+// 	printf("best route: %u\n", ntohl(best_route->next_hop));
+// 	printf("mask: %u\n", ntohl(best_route->mask));
 // 	return best_route;
 // }
-void trimite_icmp(size_t interface, char* buffer, uint8_t mtype, uint8_t mcode, int numar_biti, uint16_t id, uint16_t seq) {
-	uint8_t *pachet_icmp = malloc(600);
-	uint32_t ip_router_curent = (uint32_t)inet_addr(get_interface_ip(interface));
 
-	struct ether_hdr *parte_ether = (struct ether_hdr *)pachet_icmp;
-	struct ip_hdr *parte_ip = (struct ip_hdr *)(pachet_icmp + ETHER_HDR_LEN);
-	struct icmp_hdr *parte_icmp = (struct icmp_hdr *)(pachet_icmp + ETHER_HDR_LEN + IP_HDR_LEN);
-	// substrat de ethernet
-	// am nevoie intai de ethernet headerul al pachetului din bufferul buffer, cat si de partea lui de ip, adica
-	// ale pachetului initial.
-	struct ether_hdr *header_eth = (struct ether_hdr *)buffer;
-	struct ip_hdr *header_ip = (struct ip_hdr *)(buffer + ETHER_HDR_LEN);
-	memcpy(parte_ether->ethr_dhost, header_eth->ethr_shost, 6);
-	uint8_t mac_router_curent[6];
-	get_interface_mac(interface, mac_router_curent);
-	memcpy(parte_ether->ethr_shost, mac_router_curent, 6);
-	parte_ether->ethr_type = htons(0x0800);
-	// partea de icmp cu cele 3 caracteristici: 
-	// pun in parte ip fix headerul de ip dar modficat, dar adresle sursa/ destinatie inversate.
-	parte_ip->dest_addr = header_ip->source_addr;
-	parte_ip->source_addr = ip_router_curent;
-	parte_ip->checksum = 0;
-	parte_ip->checksum = checksum((uint16_t *)parte_ip, IP_HDR_LEN);
-	parte_ip->proto = 1; // pentru icmp.
-	parte_ip->tot_len = htons(IP_HDR_LEN + ICMP_HDR_LEN); // ca vreau sa il contina.
-	parte_ip->ttl = 64; // partea de icmp.
-	parte_icmp->mtype = mtype;
-	parte_icmp->mcode = mcode;
-	parte_icmp->check = 0;
-	parte_icmp->check = checksum((uint16_t *)parte_icmp, ICMP_HDR_LEN);
-	// le pun si pe asta. Intr-adevar la ttl si unreachable host nu am nevoie de ceva valori aici
-	// dar eu vreau sa le pun pentru testul de ECHO REQUEST.
-	parte_icmp->un_t.echo_t.id = id;
-	parte_icmp->un_t.echo_t.seq = seq;
-	// dar pachetul icmp contine in interiorul lui, pe langa header
-	// si headerul ipv4, cat si primiii 64 de biti de dupa acel ipv4 header.
-	memcpy(parte_icmp + ICMP_HDR_LEN, header_ip, IP_HDR_LEN);
-	// mi am pus mai jos, primii 64 de biti de deasupra ipv4.
-	memcpy(parte_icmp + ICMP_HDR_LEN + IP_HDR_LEN, buffer + ETHER_HDR_LEN + IP_HDR_LEN, numar_biti);
-	send_to_link(ETHER_HDR_LEN + IP_HDR_LEN + ICMP_HDR_LEN, (char *)pachet_icmp, interface);
+void send_icmp(size_t interface, char *buffer, uint8_t mtype, uint8_t mcode, int num_bits, uint16_t id, uint16_t seq)
+{
+	uint8_t *icmp_packet = malloc(600);
+	uint32_t current_router_ip = (uint32_t)inet_addr(get_interface_ip(interface));
+
+	struct ether_hdr *eth_part = (struct ether_hdr *)icmp_packet;
+	struct ip_hdr *ip_part = (struct ip_hdr *)(icmp_packet + ETHER_HDR_LEN);
+	struct icmp_hdr *icmp_part = (struct icmp_hdr *)(icmp_packet + ETHER_HDR_LEN + IP_HDR_LEN);
+
+	// Ethernet header of the original packet from the buffer
+	struct ether_hdr *eth_header = (struct ether_hdr *)buffer;
+	struct ip_hdr *ip_header = (struct ip_hdr *)(buffer + ETHER_HDR_LEN);
+
+	memcpy(eth_part->ethr_dhost, eth_header->ethr_shost, 6);
+	uint8_t current_router_mac[6];
+	get_interface_mac(interface, current_router_mac);
+	memcpy(eth_part->ethr_shost, current_router_mac, 6);
+	eth_part->ethr_type = htons(0x0800);
+
+	// IP header: swap source and destination addresses
+	ip_part->dest_addr = ip_header->source_addr;
+	ip_part->source_addr = current_router_ip;
+	ip_part->checksum = 0;
+	ip_part->checksum = checksum((uint16_t *)ip_part, IP_HDR_LEN);
+	ip_part->proto = 1; // ICMP protocol
+	ip_part->tot_len = htons(IP_HDR_LEN + ICMP_HDR_LEN);
+	ip_part->ttl = 64;
+
+	// ICMP header
+	icmp_part->mtype = mtype;
+	icmp_part->mcode = mcode;
+	icmp_part->check = 0;
+	icmp_part->check = checksum((uint16_t *)icmp_part, ICMP_HDR_LEN);
+	icmp_part->un_t.echo_t.id = id;
+	icmp_part->un_t.echo_t.seq = seq;
+
+	// ICMP packet contains the IPv4 header and the first 64 bits after the IPv4 header
+	memcpy(icmp_part + ICMP_HDR_LEN, ip_header, IP_HDR_LEN);
+	memcpy(icmp_part + ICMP_HDR_LEN + IP_HDR_LEN, buffer + ETHER_HDR_LEN + IP_HDR_LEN, num_bits);
+
+	send_to_link(ETHER_HDR_LEN + IP_HDR_LEN + ICMP_HDR_LEN, (char *)icmp_packet, interface);
 }
+
 int main(int argc, char *argv[])
 {
 	char buf[MAX_PACKET_LEN];
@@ -211,226 +246,252 @@ int main(int argc, char *argv[])
 	// Do not modify this line
 	init(argv + 2, argc - 2);
 
-	tabela_rutare = malloc(sizeof(struct route_table_entry) * 90000);
-	// executandu-se ulterior in urmatorul format:
-	// ./router rtable0.txt rr-0-1 r-0 r-1 => citesc din argv[1].
-	tabela_rutare_size = read_rtable(argv[1], tabela_rutare);
+	routing_table = malloc(sizeof(struct route_table_entry) * 90000);
+	// subsequently executed in the following format:
+	// ./router rtable0.txt rr-0-1 r-0 r-1 => I read from argv[1].
+	routing_table_size = read_rtable(argv[1], routing_table);
 
-	tabela_arp = malloc(sizeof(struct arp_table_entry) * 100);
-	tabela_arp_size = 0;
-	// initial tabela arp e goala.
-	coada_pachete = create_queue();
-	Tree arbore = AlocaNod(-2);
-	insert_all(arbore, tabela_rutare, tabela_rutare_size);
+	arp_table = malloc(sizeof(struct arp_table_entry) * 100);
+	arp_table_size = 0;
+	// Initially, ARP table is empty.
+	packets_queue = create_queue();
+	Tree tree = NodeAllocation(-2);
+	insert_all(tree, routing_table, routing_table_size);
 
-
-	while (1) {
+	while (1)
+	{
 		size_t interface;
 		size_t len;
 
-		interface = recv_from_any_link(buf, &len); // => interfata de pe care a venit pachetul.
+		interface = recv_from_any_link(buf, &len); // => the interface from which the packet was received.
 		DIE(interface < 0, "recv_from_any_links");
-		// TODO: Implement the router forwarding logic
+		// STEP 1: Implement the router forwarding logic
 
-    	/*  Note that packets received are in network order,
-			any header field which has more than 1 byte will need to be converted to
-			host order. For example, ntohs(eth_hdr->ether_type). The oposite is needed when
-			sending a packet on the link.  */
+		/*  Note that packets received are in network order,
+		any header field which has more than 1 byte will need to be converted to
+		host order. For example, ntohs(eth_hdr->ether_type). The oposite is needed when
+		sending a packet on the link.  */
 
-		// Mac Destinatie | Mac Sursa | Ether Type , dupa urmeaza payloadul (adica fix encapsularea cu IPV4).
-		uint32_t ip_router_curent = (uint32_t)inet_addr(get_interface_ip(interface));
+		// Target MAC addr | Source MAC addr | Ether Type, and after this will be the payload
+		// (i.e. the encapsulation with IPv4).
+		uint32_t ip_current_router = (uint32_t)inet_addr(get_interface_ip(interface));
 
 		struct ether_hdr *eth_hdr = (struct ether_hdr *)buf;
-		// protocoalele de mai sus fiind ,,stivuite unul dupa celalat."
-		// verific daca este un pachet cu ether_type IPv4.
-		if (ntohs(eth_hdr->ethr_type) == 0x0800) {
+		// The above protocols are "stacked one after another."
+		// Check if the packet has ether_type IPv4.
+		if (ntohs(eth_hdr->ethr_type) == 0x0800)
+		{
 			struct ip_hdr *ip_hdr = (struct ip_hdr *)(buf + ETHER_HDR_LEN);
-			// verific intai daca nu cumva pacehtul trimis ( aparent un clasic ipv4 este chiar asa, sau daca este defat un ICMP request)
-			// deci mai jos verific daca campul proto in ip_hdr este 1 !
+			// First, check if the packet sent (apparently a classic IPv4) is actually so, or if it is in fact an ICMP request.
+			// So below I check if the proto field in ip_hdr is 1!
 			struct icmp_hdr *icmp_part = (struct icmp_hdr *)(buf + ETHER_HDR_LEN + IP_HDR_LEN);
-			if (ip_hdr->proto == 1 && icmp_part->mcode == 0 && icmp_part->mtype == 8 && ip_hdr->dest_addr == (uint32_t)(inet_addr(get_interface_ip(interface)))) {
-				// Pachet ICMP destinat routerului (Echo Request)
-				printf("am un echo request pentru router.\n");
+			if (ip_hdr->proto == 1 && icmp_part->mcode == 0 && icmp_part->mtype == 8 && ip_hdr->dest_addr == (uint32_t)(inet_addr(get_interface_ip(interface))))
+			{
+				// ICMP packet addressed to the router (Echo Request)
+				printf("I have an echo request destinated to this router.\n");
 				uint16_t id = ntohs(icmp_part->un_t.echo_t.id);
 				uint16_t seq = ntohs(icmp_part->un_t.echo_t.seq);
-				trimite_icmp(interface, buf, 0, 0, sizeof(buf + ETHER_HDR_LEN + IP_HDR_LEN), id, seq);
-				// am trimis echo reply-ul apoi trec la alte pachete.
+				send_icmp(interface, buf, 0, 0, sizeof(buf + ETHER_HDR_LEN + IP_HDR_LEN), id, seq);
+				// I've sent the echo reply, and I will move forward and process the other packets.
 				continue;
 			}
 
-			struct route_table_entry *best_route = cauta_long_prefix_match(arbore, ip_hdr->dest_addr);
-			if (!best_route) {
-				printf("nu am gasit nicio ruta pentru ip-ul; %u\n", ntohl(ip_hdr->dest_addr));
-				trimite_icmp(interface, buf, 3, 0, 64, 1, 1);
+			struct route_table_entry *best_route = find_longest_prefix_match(tree, ip_hdr->dest_addr);
+			if (!best_route)
+			{
+				printf("I did not find any route for ip: %u\n", ntohl(ip_hdr->dest_addr));
+				send_icmp(interface, buf, 3, 0, 64, 1, 1);
 				continue;
 			}
 
-			// verific checksum-ul.
+			// check the checksum
 			uint16_t old_checksum = ip_hdr->checksum;
-			// fac inainte 0 pt a o calcula cum trebuie.
+			// set to 0 before, calculating it correctly.
 			ip_hdr->checksum = 0;
 			uint16_t received_checksum = checksum((uint16_t *)ip_hdr, IP_HDR_LEN);
-			if(received_checksum != ntohs(old_checksum))
+			if (received_checksum != ntohs(old_checksum))
 				continue;
 			ip_hdr->checksum = htons(received_checksum);
 
 			ip_hdr->ttl--;
-			if (ip_hdr->ttl <= 0) {
+			if (ip_hdr->ttl <= 0)
+			{
 				printf("ttl e mai mic ca 0");
-				// trimit un icmp folosind functia creata, si pe post pe id si seq pun niste valori random(am ales 1)
-				trimite_icmp(interface, buf, 11, 0, 64, 1, 1);
+				// send an ICMP using the created function, and for id and seq I use some random values (I chose 1)
+				send_icmp(interface, buf, 11, 0, 64, 1, 1);
 				continue;
 			}
 			ip_hdr->checksum = 0;
 
-			uint16_t checksum_recalculat = checksum((uint16_t *)ip_hdr, IP_HDR_LEN);
-			ip_hdr->checksum = htons(checksum_recalculat);
-			// am recalculat checksum-ul intrucat modific ttl-ul, si cand retransmiteam la urmatorul hop
-			// pachetul curent, mi se punea la checksum nou mereu 0x00 :(((
+			uint16_t checksum_recomputed = checksum((uint16_t *)ip_hdr, IP_HDR_LEN);
+			ip_hdr->checksum = htons(checksum_recomputed);
+			// I recalculated the checksum because I modified the TTL, and when retransmitting to the next hop
+			// the current packet, the new checksum was always set to 0x00 :((
 
-			uint8_t mac_destinatie[6];
-			int gasit = 0;
-			for (int i = 0; i < tabela_arp_size; i++) {
-				if (tabela_arp[i].ip == best_route->next_hop) {
-					gasit = 1;
-					memcpy(mac_destinatie, tabela_arp[i].mac, 6);
+			uint8_t destination_mac[6];
+			int found = 0;
+			for (int i = 0; i < arp_table_size; i++)
+			{
+				if (arp_table[i].ip == best_route->next_hop)
+				{
+					found = 1;
+					memcpy(destination_mac, arp_table[i].mac, 6);
 					break;
 				}
 			}
-			// daca adresa mac a next-hopului exista in tabela arp => trimit pachetul cu datele populate.
-			if (gasit == 1) {
-				// pun in headerul de Ethernet adresa mac destinatie a hopului gasit precedent.
-				memcpy(eth_hdr->ethr_dhost, mac_destinatie, 6);
+			// if the MAC address of the next-hop exists in the ARP table => send the packet with the populated data.
+			if (found == 1)
+			{
+				// put in the Ethernet header the destination MAC address of the previously found next hop.
+				memcpy(eth_hdr->ethr_dhost, destination_mac, 6);
 				uint8_t router_mac_addr[6];
 				get_interface_mac(interface, router_mac_addr);
 				memcpy(eth_hdr->ethr_shost, router_mac_addr, 6);
 
 				send_to_link(len, buf, best_route->interface);
-				printf("trimit pachetul pe interfata: %d\n", best_route->interface);
-			} // Daca nu exista in cahch-ul tabelei arp trebuie sa fac un arp_request sa iau determin mac-ul next-hopului.
-			else {
-				// plasez pachetul in coada daca best_route->next_hop e valid
-				struct pachet_coada *pachet_de_pus = malloc(sizeof(struct pachet_coada));
-				pachet_de_pus->buf = malloc(len); // aloc memorie pt a pune pachetul in coada.
-				memcpy(pachet_de_pus->buf, buf, len);
-				pachet_de_pus->next_hop = best_route->next_hop;
-				pachet_de_pus->interface = best_route->interface;
-				// interfata routerului care trimite un request.
-				// trebuie sa o pun, astfel incat cand ma intorc cu un reply sa stiu pe unde o trimit, am memorat-o aici
-				// cand ma intorc stiu pe ce interfata sa trimit pachetul ipv4.
+				printf("I send the packet on this interface: %d\n", best_route->interface);
+			}
+			// If it does not exist in the ARP table cache, I need to send an ARP request to
+			// determine the MAC address of the next hop.
+			else
+			{
+				// place the packet in the queue if best_route->next_hop is valid
+				struct queue_packet *packet_to_enqueue = malloc(sizeof(struct queue_packet));
+				packet_to_enqueue->buf = malloc(len); // aloc memorie pt a pune pachetul in coada.
+				memcpy(packet_to_enqueue->buf, buf, len);
+				packet_to_enqueue->next_hop = best_route->next_hop;
+				packet_to_enqueue->interface = best_route->interface;
+				// the interface of the router that sends a request.
+				// I need to store it, so that when I receive a reply I know where to send it; I saved it here
+				// when I get the reply, I know on which interface to send the IPv4 packet.
 
-				pachet_de_pus->len = len;
-				// pun in coada pachetul curent.
-				queue_enq(coada_pachete, pachet_de_pus);
-				printf("am pus pachetul in coada\n");
+				packet_to_enqueue->len = len;
+				// enqueue the current packet.
+				queue_enq(packets_queue, packet_to_enqueue);
+				printf("I've enqueued the packet.\n");
 
-				// formez pachetul arp pe care vreau sa il trimit mai departe ca sa alfu macul, voi face un request.
-				uint8_t pachet_arp[ETHER_HDR_LEN + ARP_HDR_LEN];
-				struct ether_hdr *parte_eth = (struct ether_hdr *)pachet_arp;
-				struct arp_hdr *parte_arp = (struct arp_hdr *)(pachet_arp+ ETHER_HDR_LEN);
-				
-				parte_eth->ethr_type = htons(0x0806);
-				memset(parte_eth->ethr_dhost, 0xff, 6); // broadcast-ul
-				get_interface_mac(interface, parte_eth->ethr_shost);
-			
-				// populez headerul.
-				parte_arp->opcode = htons(1);
-				parte_arp->hw_len = 6;
-				parte_arp->proto_len = 4;
-				parte_arp->proto_type = htons(0x0800);
-				parte_arp->hw_type = htons(1);
-				// pun ca adresa mac sursa, adresa mac a interfetei routerului curent.
-				get_interface_mac(best_route->interface, parte_arp->shwa);
-				// adresa mac destinatie va fi 0x00 intrucat aici ma astept ulterior sa imi parseze reply-ul o adresa pe care eu o caut acum.
-				memset(parte_arp->thwa, 0x00, 6);
-				parte_arp->sprotoa = (uint32_t)(inet_addr(get_interface_ip(best_route->interface)));
-				// adresa ip destinatie va fi adresa ip a urmatorului hop
-				parte_arp->tprotoa = best_route->next_hop;
-				// trimit requestul 
-				send_to_link(ETHER_HDR_LEN + ARP_HDR_LEN, (char*)pachet_arp, best_route->interface);
-				}
-			} else if ((ntohs(eth_hdr->ethr_type)) == 0x0806) {
-				struct arp_hdr *parte_arp_pachet_arp = (struct arp_hdr *)(buf + ETHER_HDR_LEN);
+				// I create the ARP packet that I want to send further in order to find out the MAC address, I will make a request.
+				uint8_t arp_packet[ETHER_HDR_LEN + ARP_HDR_LEN];
+				struct ether_hdr *ethernet_part = (struct ether_hdr *)arp_packet;
+				struct arp_hdr *arp_part = (struct arp_hdr *)(arp_packet + ETHER_HDR_LEN);
 
-				// daca acest router primeste defapt un pachet de reply, atunci procesez pachetul
-				// si completez tabela de arp.
-				if (ntohs(parte_arp_pachet_arp->opcode) == 2) {  // daca e un reply memorez adresa ip si mac din partea de sender din reply-ul arp primit.
-					tabela_arp[tabela_arp_size].ip = parte_arp_pachet_arp->sprotoa;
-					memcpy(tabela_arp[tabela_arp_size].mac, parte_arp_pachet_arp->shwa, 6);
-					tabela_arp_size++;
-					while(!queue_empty(coada_pachete)) {
-						printf("am intrat in coada mea de pachete\n");
-						int gasit = 0;
-						struct pachet_coada *pachet_scos = (struct pachet_coada*)queue_deq(coada_pachete);
-						if (!pachet_scos) {
-							continue;
-						}
-						// daca adresa aceasta ip are corespondent in adresa mac in arp table => OK, trimit direct pachetul la macul dest al lui next hop.
-						u_int8_t mac_gasit[6];
-						for (int i = 0; i < tabela_arp_size; i++) {
-							if (pachet_scos->next_hop == tabela_arp[i].ip) {
-								// daca cheile coincid => memorez mac-ul de la cheia asta.
-								memcpy(mac_gasit, tabela_arp[i].mac, 6);
-								gasit = 1;
-								break;
-							}
-						}
-						// trimit pachetul scos idn coada a carui adresa mac o gasesc in chache ul arp acum.
-						if (gasit == 1) {
-							// inseamna ca adresa mac destinatie a urmatorului hop o cunosc=>il trimit pe interfata de PE CARE A VENIT LA MINE.
-							// coada sa zic ca arata asa: pachet_00 pachet_01, pachet_02 , unde pachet_00 a fost primul pachet pus in coada
-							// AICI FACEAM PROSTIA SA lucrez cu buf simplu, care era bufferul arp reply-ului, mie imi
-							// trebuia sa lucrez cu pachetul scos din coada. => actualizai in structura de pachet_coada sa retin si buf-ul curent.
-							struct ether_hdr* parte_eth_pachet_scos= (struct ether_hdr*)pachet_scos->buf;
-							// partea ip momentan nu ma intereseaza.
-							uint8_t mac_router_de_trimis[6];
+				ethernet_part->ethr_type = htons(0x0806);
+				memset(ethernet_part->ethr_dhost, 0xff, 6); // the broadcast
+				get_interface_mac(interface, ethernet_part->ethr_shost);
 
-							// preiau adresa mac corespunzatoare interfetei pe care trebuia pachetul original sa se trimita.
-							get_interface_mac(pachet_scos->interface, mac_router_de_trimis);
-							// si o pun ca si adresa hardware sursa.
-							memcpy(parte_eth_pachet_scos->ethr_shost, mac_router_de_trimis, 6);
-							// si il trimit ca avand in protocolul ethernet, ca destinatie, mac-ul urmatorului hop bun gasit mai sus.
-							memcpy(parte_eth_pachet_scos->ethr_dhost, mac_gasit, 6);
-							send_to_link(pachet_scos->len, (char *)pachet_scos->buf, pachet_scos->interface);
-						} else {
-							// nu am gasit adresa mac a pachetului scos din coada, deci il pun inapoi in coada.
-							queue_enq(coada_pachete, pachet_scos);
-							printf("il pun la loc si continui.");
-						}
-						free(pachet_scos->buf);
-						free(pachet_scos);
+				// populate the header.
+				arp_part->opcode = htons(1);
+				arp_part->hw_len = 6;
+				arp_part->proto_len = 4;
+				arp_part->proto_type = htons(0x0800);
+				arp_part->hw_type = htons(1);
+				// set as source MAC address, the MAC address of the current router interface.
+				get_interface_mac(best_route->interface, arp_part->shwa);
+				// the destination MAC address will be 0x00 because here I expect to later parse the reply for an address that I am currently searching for.
+				memset(arp_part->thwa, 0x00, 6);
+				arp_part->sprotoa = (uint32_t)(inet_addr(get_interface_ip(best_route->interface)));
+				// the destination IP address will be the IP address of the next hop
+				arp_part->tprotoa = best_route->next_hop;
+				// send the request
+				send_to_link(ETHER_HDR_LEN + ARP_HDR_LEN, (char *)arp_packet, best_route->interface);
+			}
+		}
+		else if ((ntohs(eth_hdr->ethr_type)) == 0x0806)
+		{
+			struct arp_hdr *arp_part_arp_packet = (struct arp_hdr *)(buf + ETHER_HDR_LEN);
+
+			// if this router actually receives a reply packet, then I process the packet
+			// and update the ARP table.
+			if (ntohs(arp_part_arp_packet->opcode) == 2)
+			{
+				// if it's a reply, I store the IP and MAC address from the sender part of the received ARP reply.
+				arp_table[arp_table_size].ip = arp_part_arp_packet->sprotoa;
+				memcpy(arp_table[arp_table_size].mac, arp_part_arp_packet->shwa, 6);
+				arp_table_size++;
+				while (!queue_empty(packets_queue))
+				{
+					printf("I'm in the packet queue.\n");
+					int found = 0;
+					struct queue_packet *dequeued_packet = (struct queue_packet *)queue_deq(packets_queue);
+					if (!dequeued_packet)
+					{
+						continue;
 					}
-				} else if (ntohs(parte_arp_pachet_arp->opcode) == 1) { // se trimite nu arp request de la un vm catre routerul meu =>..
-					tabela_arp[tabela_arp_size].ip = parte_arp_pachet_arp->sprotoa;
-					memcpy(tabela_arp[tabela_arp_size].mac, parte_arp_pachet_arp->shwa, 6);
-					tabela_arp_size++;
+					// if this IP address has a corresponding MAC address in the ARP table => OK, I send the packet directly to the destination MAC of its next hop.
+					u_int8_t mac_found[6];
+					for (int i = 0; i < arp_table_size; i++)
+					{
+						if (dequeued_packet->next_hop == arp_table[i].ip)
+						{
+							// if the keys match => store the MAC address from this key.
+							memcpy(mac_found, arp_table[i].mac, 6);
+							found = 1;
+							break;
+						}
+					}
+					// send the dequeued packet whose MAC address I now find in the ARP cache.
+					if (found == 1)
+					{
+						// this means that I know the destination MAC address of the next hop => I send it on the interface
+						// FROM WHICH IT CAME TO ME. Let's say the queue looks like this: packet_00 packet_01, packet_02,
+						// where packet_00 was the first packet put in the queue
+						// HERE I WAS MAKING THE MISTAKE of working with the simple buf, which was the buffer
+						// of the arp reply, but I needed to work with the packet dequeued from the queue. =>
+						// I updated the queue_packet structure to also store the current buf.
+						struct ether_hdr *ethernet_part_dequeued_packet = (struct ether_hdr *)dequeued_packet->buf;
+						// the IP part does not interest me at the moment.
+						uint8_t mac_router_to_send[6];
 
-					// daca e un request, atunci trebuie sa ii trimit un reply.
-					// deci trebuie sa completez pachetul de reply.
-					uint8_t mac_router_curent[6];
-					get_interface_mac(interface, mac_router_curent);
-					struct ether_hdr *parte_eth = (struct ether_hdr *)buf;
-					struct arp_hdr *parte_arp = (struct arp_hdr *)(buf + ETHER_HDR_LEN);
-
-					uint8_t shwa_curent[6];
-					get_interface_mac(interface, shwa_curent);
-					// adresa mac sursa -> adresa mac a mea ca router.
-					memcpy(parte_eth->ethr_shost, shwa_curent, 6);
-					// adresa mac destinatie -> adresa mac a vm-ului care mi a trimis mie requestul. ( ca eu vreau sa ii
-					// dau lui inapoi)
-					memcpy(parte_eth->ethr_dhost, parte_arp_pachet_arp->shwa, 6);
-
-					memcpy(parte_arp->thwa, parte_arp->shwa, 6);
-					memcpy(parte_arp->shwa, shwa_curent, 6);
-					parte_arp->opcode = htons(2); // pt arp de tip reply.
-					parte_arp->hw_type = htons(1);
-					// ip sursa a pachetului arp reply -> adresa ip a routerului meu.
-					parte_arp->sprotoa = ip_router_curent;
-					// ip destinatie, e adresa ip a vm-ului care mi-a trimis requestul.
-					memcpy((uint8_t *)&parte_arp->tprotoa, (uint8_t *)&parte_arp->sprotoa, 4);
-					// trimit frumos pachetul pe interfata pe care mi-a venit.
-					send_to_link(ETHER_HDR_LEN + ARP_HDR_LEN, (char*)buf, interface);
+						// I retrieve the MAC address corresponding to the interface on which the original packet was supposed to be sent.
+						get_interface_mac(dequeued_packet->interface, mac_router_to_send);
+						// and I set it as the source hardware address.
+						memcpy(ethernet_part_dequeued_packet->ethr_shost, mac_router_to_send, 6);
+						// and I send it with the Ethernet protocol, setting as destination the MAC address of the next hop found above.
+						memcpy(ethernet_part_dequeued_packet->ethr_dhost, mac_found, 6);
+						send_to_link(dequeued_packet->len, (char *)dequeued_packet->buf, dequeued_packet->interface);
+					}
+					else
+					{
+						// I did not find the MAC address of the packet dequeued from the queue, so I put it back in the queue.
+						queue_enq(packets_queue, dequeued_packet);
+						printf("I put it back and continue.");
+					}
+					free(dequeued_packet->buf);
+					free(dequeued_packet);
 				}
 			}
+			else if (ntohs(arp_part_arp_packet->opcode) == 1)
+			{
+				// an ARP request is sent from a VM to my router =>..
+				arp_table[arp_table_size].ip = arp_part_arp_packet->sprotoa;
+				memcpy(arp_table[arp_table_size].mac, arp_part_arp_packet->shwa, 6);
+				arp_table_size++;
+
+				// if it's a request, then I need to send a reply.
+				// so I need to fill in the reply packet.
+				uint8_t mac_router_curent[6];
+				get_interface_mac(interface, mac_router_curent);
+				struct ether_hdr *ethernet_part = (struct ether_hdr *)buf;
+				struct arp_hdr *arp_part = (struct arp_hdr *)(buf + ETHER_HDR_LEN);
+
+				uint8_t shwa_curent[6];
+				get_interface_mac(interface, shwa_curent);
+				// source mac address -> my mac address as the router.
+				memcpy(ethernet_part->ethr_shost, shwa_curent, 6);
+				// destination MAC address -> MAC address of the VM that sent me the request (since I want to reply to it)
+				memcpy(ethernet_part->ethr_dhost, arp_part_arp_packet->shwa, 6);
+
+				memcpy(arp_part->thwa, arp_part->shwa, 6);
+				memcpy(arp_part->shwa, shwa_curent, 6);
+				arp_part->opcode = htons(2); // for an arp reply type.
+				arp_part->hw_type = htons(1);
+				// source IP address of the ARP reply packet -> IP address of my router.
+				arp_part->sprotoa = ip_current_router;
+				// destination IP, it's the IP address of the VM that sent me the request.
+				memcpy((uint8_t *)&arp_part->tprotoa, (uint8_t *)&arp_part->sprotoa, 4);
+				// I nicely send the packet on the interface from which it was received.
+				send_to_link(ETHER_HDR_LEN + ARP_HDR_LEN, (char *)buf, interface);
+			}
+		}
 	}
 }
