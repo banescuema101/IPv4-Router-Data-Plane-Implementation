@@ -29,6 +29,32 @@ To start the routers manually, use the following commands -> the first one from 
 
 To avoid typing the full IP address of a host, you can use h0, h1, h2, and h3 as aliases (e.g., ping h1).
 
+### Benchmarking and Performance Testing
+
+To benchmark the IPv4 router, use the provided script (`checker/benchmark_router.py`) from host h0. This script uses **Scapy** to generate and measure network traffic.
+
+**Step 1: Install Scapy** (on h0 terminal)
+```bash
+sudo apt-get update
+sudo apt-get install python3-scapy
+```
+
+**Step 2: Run the benchmark script** (from h0 terminal)
+```bash
+sudo python3 checker/benchmark_router.py
+```
+
+The script will report throughput (packets/sec) and latency (average and p99).  
+Example output:
+```
+Sending 10.000 packets to measure throughput...
+Throughput: 2,880 packets/sec over 3.47 seconds
+Measuring latency (100 runs)
+Average latency: 32,247 us, p99 latency: 42,109 us
+```
+
+These results helped me to evaluate the forwarding efficiency and responsiveness of my router implementation.
+
 ## Features Implemented
 
 ### Dynamic ARP Table Management
